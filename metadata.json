@@ -1,0 +1,12 @@
+{
+  "uuid": "smart-workspace-manager@local",
+  "name": "Smart Workspace Manager",
+  "description": "Enables workspace switching only on external monitors, keeping laptop screen static",
+  "version": 1,
+  "shell-version": [
+    "45",
+    "46"
+  ],
+  "url": "",
+  "settings-schema": ""
+}
