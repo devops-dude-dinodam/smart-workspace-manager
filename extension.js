@@ -13,17 +13,81 @@ class SmartWorkspaceManager extends GObject.Object {
         this._isOnExternalMonitor = false;
         this._laptopMonitorIndex = -1;
         this._lastWorkspaceIndex = 0;
+        this._isActive = false;
+        
+        // Listen for monitor changes
+        this._monitorsChangedId = Main.layoutManager.connect('monitors-changed', () => {
+            this._handleMonitorChange();
+        });
+        
+        // Initial setup
+        this._handleMonitorChange();
+    }
+    
+    _handleMonitorChange() {
+        const numMonitors = Main.layoutManager.monitors.length;
+        
+        console.log(`Monitor change detected: ${numMonitors} monitor(s) connected`);
+        
+        if (numMonitors <= 1) {
+            console.log('Single monitor detected - disabling workspace sync');
+            this._disableSync();
+        } else {
+            console.log(`${numMonitors} monitors detected - enabling workspace sync`);
+            this._enableSync();
+        }
+    }
+    
+    _enableSync() {
+        if (this._isActive) {
+            console.log('Sync already active, skipping enable');
+            return;
+        }
+        
+        console.log('Enabling multi-monitor workspace sync');
+        this._isActive = true;
         
         // Find laptop monitor
         this._identifyLaptopMonitor();
         
         // Start tracking
-        this._mouseTracker = null;
         this._startTracking();
+    }
+    
+    _disableSync() {
+        if (!this._isActive) {
+            console.log('Sync already disabled, skipping disable');
+            return;
+        }
+        
+        console.log('Disabling workspace sync (single monitor mode)');
+        this._isActive = false;
+        
+        // Stop mouse tracking
+        if (this._mouseTracker) {
+            clearInterval(this._mouseTracker);
+            this._mouseTracker = null;
+        }
+        
+        // Disconnect workspace signals
+        if (this._workspaceChangedId) {
+            global.workspace_manager.disconnect(this._workspaceChangedId);
+            this._workspaceChangedId = null;
+        }
+        
+        // Reset state
+        this._currentMonitorIndex = -1;
+        this._isOnExternalMonitor = false;
+        this._laptopMonitorIndex = -1;
     }
     
     _identifyLaptopMonitor() {
         const monitors = Main.layoutManager.monitors;
+        
+        if (monitors.length <= 1) {
+            this._laptopMonitorIndex = 0;
+            return;
+        }
         
         // Find smallest monitor as laptop
         let smallestMonitor = 0;
@@ -42,6 +106,11 @@ class SmartWorkspaceManager extends GObject.Object {
     }
     
     _startTracking() {
+        if (!this._isActive) {
+            console.log('Sync disabled, not starting tracking');
+            return;
+        }
+        
         // Track mouse position
         this._mouseTracker = setInterval(() => {
             this._updateMonitorFocus();
@@ -55,7 +124,7 @@ class SmartWorkspaceManager extends GObject.Object {
             this._onWorkspaceChanged();
         });
         
-        console.log('Window sync workspace management enabled');
+        console.log('Multi-monitor workspace sync enabled');
         this._updateMonitorFocus();
     }
     
@@ -89,6 +158,10 @@ class SmartWorkspaceManager extends GObject.Object {
     }
     
     _onWorkspaceChanged() {
+        if (!this._isActive) {
+            return; // Don't sync if disabled
+        }
+        
         const workspaceManager = global.workspace_manager;
         const currentWorkspaceIndex = workspaceManager.get_active_workspace().index();
         const previousWorkspaceIndex = this._lastWorkspaceIndex;
@@ -156,11 +229,13 @@ class SmartWorkspaceManager extends GObject.Object {
                 newWorkspaceIndex = oldWorkspaceIndex - workspaceDiff;
             }
             
-            // Handle workspace wrapping (optional - you can remove this if you don't want wrapping)
+            // Handle workspace bounds - no wrapping, just clamp to valid range
             if (newWorkspaceIndex >= numWorkspaces) {
-                newWorkspaceIndex = newWorkspaceIndex % numWorkspaces;
+                console.log(`Workspace ${newWorkspaceIndex + 1} exceeds max ${numWorkspaces}, skipping shift for this monitor`);
+                return; // Skip this monitor's shift
             } else if (newWorkspaceIndex < 0) {
-                newWorkspaceIndex = numWorkspaces + newWorkspaceIndex;
+                console.log(`Workspace ${newWorkspaceIndex + 1} below minimum, skipping shift for this monitor`);
+                return; // Skip this monitor's shift
             }
             
             // Skip if the new workspace is the same as old
@@ -225,6 +300,13 @@ class SmartWorkspaceManager extends GObject.Object {
     }
     
     destroy() {
+        // Disconnect monitor change listener
+        if (this._monitorsChangedId) {
+            Main.layoutManager.disconnect(this._monitorsChangedId);
+            this._monitorsChangedId = null;
+        }
+        
+        // Clean up tracking
         if (this._mouseTracker) {
             clearInterval(this._mouseTracker);
             this._mouseTracker = null;
@@ -235,6 +317,7 @@ class SmartWorkspaceManager extends GObject.Object {
             this._workspaceChangedId = null;
         }
         
+        console.log('Smart Workspace Manager destroyed');
         super.destroy();
     }
 });
