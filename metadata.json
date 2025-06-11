@@ -1,12 +1,8 @@
 {
   "uuid": "smart-workspace-manager@local",
-  "name": "Smart Workspace Manager",
-  "description": "Enables workspace switching only on external monitors, keeping laptop screen static",
+  "name": "Smart Workspace Manager", 
+  "description": "Synchronizes workspace switching across multiple monitors based on mouse focus. When you switch workspaces on one monitor, windows on other monitors automatically shift to maintain workspace independence per monitor.",
   "version": 1,
-  "shell-version": [
-    "45",
-    "46"
-  ],
-  "url": "",
-  "settings-schema": ""
+  "shell-version": ["45", "46", "47"],
+  "url": "https://github.com/devops-dude-dinodam/smart-workspace-manager"
 }

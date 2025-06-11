@@ -15,6 +15,10 @@ class SmartWorkspaceManager extends GObject.Object {
         this._lastWorkspaceIndex = 0;
         this._isActive = false;
         
+        // Track timeout IDs for cleanup
+        this._syncTimeoutId = null;
+        this._windowMoveTimeouts = [];
+        
         // Listen for monitor changes
         this._monitorsChangedId = Main.layoutManager.connect('monitors-changed', () => {
             this._handleMonitorChange();
@@ -74,6 +78,16 @@ class SmartWorkspaceManager extends GObject.Object {
             global.workspace_manager.disconnect(this._workspaceChangedId);
             this._workspaceChangedId = null;
         }
+        
+        // Clean up timeouts
+        if (this._syncTimeoutId) {
+            clearTimeout(this._syncTimeoutId);
+            this._syncTimeoutId = null;
+        }
+        
+        // Clean up any pending window move timeouts
+        this._windowMoveTimeouts.forEach(timeoutId => clearTimeout(timeoutId));
+        this._windowMoveTimeouts = [];
         
         // Reset state
         this._currentMonitorIndex = -1;
@@ -175,9 +189,9 @@ class SmartWorkspaceManager extends GObject.Object {
         console.log(`Workspace moved ${direction} by ${workspaceDiff}, syncing other monitors`);
         
         // Sync immediately with minimal delay
-        setTimeout(() => {
+        this._syncTimeoutId = setTimeout(() => {
             this._syncOtherMonitors(direction, workspaceDiff);
-        }, 50); // Reduced from default to 50ms
+        }, 50);
         
         // Update last workspace
         this._lastWorkspaceIndex = currentWorkspaceIndex;
@@ -200,17 +214,26 @@ class SmartWorkspaceManager extends GObject.Object {
     _shiftMonitorWorkspaces(monitorIndex, direction, workspaceDiff) {
         const workspaceManager = global.workspace_manager;
         const numWorkspaces = workspaceManager.get_n_workspaces();
-        const currentWorkspaceIndex = workspaceManager.get_active_workspace().index();
         
         console.log(`Shifting monitor ${monitorIndex + 1} workspaces ${direction} by ${workspaceDiff}`);
+        console.log(`Total workspaces: ${numWorkspaces}`);
         
         // Collect all windows on this monitor across ALL workspaces
         const monitorWindowsByWorkspace = new Map();
         
         for (let wsIndex = 0; wsIndex < numWorkspaces; wsIndex++) {
             const workspace = workspaceManager.get_workspace_by_index(wsIndex);
+            if (!workspace) continue;
+            
             const windows = workspace.list_windows();
-            const monitorWindows = windows.filter(window => window.get_monitor() === monitorIndex);
+            const monitorWindows = windows.filter(window => {
+                try {
+                    return window && window.get_monitor && window.get_monitor() === monitorIndex;
+                } catch (e) {
+                    console.log(`Error checking window monitor: ${e}`);
+                    return false;
+                }
+            });
             
             if (monitorWindows.length > 0) {
                 monitorWindowsByWorkspace.set(wsIndex, monitorWindows);
@@ -229,13 +252,10 @@ class SmartWorkspaceManager extends GObject.Object {
                 newWorkspaceIndex = oldWorkspaceIndex - workspaceDiff;
             }
             
-            // Handle workspace bounds - no wrapping, just clamp to valid range
-            if (newWorkspaceIndex >= numWorkspaces) {
-                console.log(`Workspace ${newWorkspaceIndex + 1} exceeds max ${numWorkspaces}, skipping shift for this monitor`);
-                return; // Skip this monitor's shift
-            } else if (newWorkspaceIndex < 0) {
-                console.log(`Workspace ${newWorkspaceIndex + 1} below minimum, skipping shift for this monitor`);
-                return; // Skip this monitor's shift
+            // Simple bounds checking
+            if (newWorkspaceIndex < 0 || newWorkspaceIndex >= numWorkspaces) {
+                console.log(`Target workspace ${newWorkspaceIndex + 1} out of bounds, skipping`);
+                return;
             }
             
             // Skip if the new workspace is the same as old
@@ -244,58 +264,28 @@ class SmartWorkspaceManager extends GObject.Object {
             }
             
             const targetWorkspace = workspaceManager.get_workspace_by_index(newWorkspaceIndex);
+            
             if (!targetWorkspace) {
-                console.log(`Invalid target workspace ${newWorkspaceIndex + 1} for monitor ${monitorIndex + 1}`);
+                console.log(`Workspace ${newWorkspaceIndex + 1} doesn't exist, skipping`);
                 return;
             }
             
-            console.log(`Moving ${windows.length} windows from monitor ${monitorIndex + 1} workspace ${oldWorkspaceIndex + 1} → ${newWorkspaceIndex + 1}`);
+            console.log(`Moving ${windows.length} windows from workspace ${oldWorkspaceIndex + 1} → ${newWorkspaceIndex + 1}`);
             
-            // Move all windows from this workspace to the new workspace
+            // Move all windows
             windows.forEach((window, index) => {
-                setTimeout(() => {
+                const timeoutId = setTimeout(() => {
                     try {
                         window.change_workspace(targetWorkspace);
                         console.log(`Moved "${window.get_title()}" to workspace ${newWorkspaceIndex + 1}`);
                     } catch (error) {
                         console.log(`Error moving window: ${error}`);
                     }
-                }, index * 10); // 10ms stagger between each window
+                }, index * 10);
+                
+                // Track timeout for cleanup
+                this._windowMoveTimeouts.push(timeoutId);
             });
-        });
-    }
-    
-    _moveMonitorWindowsToWorkspace(monitorIndex, targetWorkspace) {
-        const currentWorkspace = global.workspace_manager.get_active_workspace();
-        
-        // Get all windows that need to move
-        const currentWindows = currentWorkspace.list_windows().filter(window => window.get_monitor() === monitorIndex);
-        const targetWindows = targetWorkspace.list_windows().filter(window => 
-            window.get_monitor() === monitorIndex && window.get_workspace() !== currentWorkspace
-        );
-        
-        if (currentWindows.length === 0 && targetWindows.length === 0) {
-            return;
-        }
-        
-        console.log(`Syncing monitor ${monitorIndex + 1}: moving ${currentWindows.length} out, bringing ${targetWindows.length} in`);
-        
-        // Batch all window movements together for speed
-        const allMoves = [
-            ...currentWindows.map(window => ({ window, target: targetWorkspace, action: 'move_out' })),
-            ...targetWindows.map(window => ({ window, target: currentWorkspace, action: 'bring_in' }))
-        ];
-        
-        // Execute all moves rapidly
-        allMoves.forEach(({ window, target }, index) => {
-            // Slight stagger to avoid overwhelming the system
-            setTimeout(() => {
-                try {
-                    window.change_workspace(target);
-                } catch (error) {
-                    console.log(`Error moving window: ${error}`);
-                }
-            }, index * 5); // 5ms stagger between each window
         });
     }
     
@@ -317,8 +307,17 @@ class SmartWorkspaceManager extends GObject.Object {
             this._workspaceChangedId = null;
         }
         
+        // Clean up timeouts
+        if (this._syncTimeoutId) {
+            clearTimeout(this._syncTimeoutId);
+            this._syncTimeoutId = null;
+        }
+        
+        // Clean up any pending window move timeouts
+        this._windowMoveTimeouts.forEach(timeoutId => clearTimeout(timeoutId));
+        this._windowMoveTimeouts = [];
+        
         console.log('Smart Workspace Manager destroyed');
-        super.destroy();
     }
 });
 
@@ -333,7 +332,11 @@ class Extension {
     
     disable() {
         if (this._workspaceManager) {
-            this._workspaceManager.destroy();
+            try {
+                this._workspaceManager.destroy();
+            } catch (error) {
+                console.log(`Error during workspace manager destroy: ${error}`);
+            }
             this._workspaceManager = null;
         }
     }
